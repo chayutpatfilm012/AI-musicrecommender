@@ -1,12 +1,13 @@
 """
 Command line runner for the Music Recommender Simulation.
 
-This file helps you quickly run and test your recommender.
+Loads the song catalog, scores every song against a listener profile using
+the functions in recommender.py, and prints the top 5 recommendations with
+the reasons for each score.
 
-You will implement the functions in recommender.py:
-- load_songs
-- score_song
-- recommend_songs
+Usage:
+    python -m src.main            # default profile (pop, happy, energy 0.8)
+    python -m src.main --stress   # four stress-test profiles
 """
 
 import argparse

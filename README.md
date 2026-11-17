@@ -9,7 +9,8 @@ I also stress-tested the system with four very different listener profiles and r
 ---
 
 ## How The System Works
-Real music recommendation systems like Spotify and YouTube use listening history, user behavior, and song features to recommend music. They combine collaborative filtering and content-based filtering. My simulation will focus on content-based filtering by comparing user preferences with song attributes such as genre, mood, and energy. Each song receives a score based on how closely it matches the user's preferences. Songs with higher scores will be recommended first.
+
+My music recommender uses content-based filtering to recommend songs based on a user's preferred genre, mood, and energy level, with optional valence and acousticness preferences. It compares these preferences with 20 fictional songs, calculates a weighted score for each song, and displays the top 5 recommendations with explanations. The system also supports stress testing with four different listener profiles.
 
 ### Features Used
 
@@ -46,9 +47,9 @@ The system ranks songs by score and recommends the highest-scoring songs.
 
 ### Final Algorithm Recipe
 
-My music recommender uses content-based filtering to compare a user's preferences with 20 songs in songs.csv.
+The recommender compares a user's preferences with the 20 songs in `data/songs.csv`.
 
-The user profile includes genre, mood, energy, valence, and acousticness.
+The user profile includes genre, mood, and energy, plus optional valence and acousticness.
 
 The scoring system uses these weights:
 
@@ -62,13 +63,15 @@ For numerical features, similarity is calculated as:
 
 `Similarity = 1 - abs(user_value - song_value)`
 
-The maximum score is 5.5 points. The program calculates a score for each song, sorts the songs from highest to lowest score, and recommends the top 5 songs.
+The maximum score is 5.5 points when all five preferences are provided, or 4.5 points when only genre, mood, and energy are used. The program scores each song, sorts the results from highest to lowest, and recommends the top 5 songs.
 
 ### Potential Biases and Limitations
 
 The system may favor songs from the user's preferred genre because genre has the highest weight. It may also miss good songs from other genres. Using similar moods helps reduce this problem, but recommendations may still lack variety. The dataset is also small, with only 20 songs, so the available recommendations are limited.
+
 ### Recommendation Flow
 
+```text
 Input: User Profile + songs.csv (20 songs)
           ↓
 Process: Loop through each song
@@ -80,6 +83,9 @@ Store each song with its score
 Ranking: Sort songs by score (highest to lowest)
           ↓
 Output: Top 5 Recommended Songs
+```
+
+---
 
 ## Getting Started
 
@@ -89,31 +95,45 @@ Output: Top 5 Recommended Songs
 
    ```bash
    python -m venv .venv
-   source .venv/bin/activate      # Mac or Linux
-   .venv\Scripts\activate         # Windows
    ```
 
-2. Install dependencies
+   Activate it on macOS or Linux:
 
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   source .venv/bin/activate
+   ```
+
+   Activate it on Windows (PowerShell):
+
+   ```powershell
+   .venv\Scripts\Activate.ps1
+   ```
+
+2. Install the dependencies:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 3. Run the app:
 
-```bash
-python -m src.main
-```
+   ```bash
+   python -m src.main
+   ```
+
+4. Run the stress test with four listener profiles:
+
+   ```bash
+   python -m src.main --stress
+   ```
 
 ### Running Tests
 
-Run the starter tests with:
+Run the unit tests with:
 
 ```bash
 pytest
 ```
-
-You can add more tests in `tests/test_recommender.py`.
 
 ---
 
@@ -404,7 +424,7 @@ Top 5 recommendations
 
 ---
 
-## Experiments You Tried
+## Experiments
 
 ### 1. Expanding the catalog
 

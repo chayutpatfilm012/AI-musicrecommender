@@ -1,7 +1,7 @@
 import csv
 import os
 from typing import List, Dict, Tuple, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 @dataclass
 class Song:
@@ -39,13 +39,28 @@ class Recommender:
     def __init__(self, songs: List[Song]):
         self.songs = songs
 
+    @staticmethod
+    def _to_prefs(user: UserProfile) -> Dict:
+        """Convert a UserProfile into the user_prefs dict used by score_song."""
+        # likes_acoustic is a yes/no flag, not a 0-1 target, so it is not scored.
+        return {
+            "genre": user.favorite_genre,
+            "mood": user.favorite_mood,
+            "energy": user.target_energy,
+        }
+
     def recommend(self, user: UserProfile, k: int = 5) -> List[Song]:
-        # TODO: Implement recommendation logic
-        return self.songs[:k]
+        """Return the top k songs ranked by recommend_songs (highest score first)."""
+        song_dicts = [asdict(song) for song in self.songs]
+        by_dict_id = {id(d): song for d, song in zip(song_dicts, self.songs)}
+        ranked = recommend_songs(self._to_prefs(user), song_dicts, k=k)
+        return [by_dict_id[id(song_dict)] for song_dict, _, _ in ranked]
 
     def explain_recommendation(self, user: UserProfile, song: Song) -> str:
-        # TODO: Implement explanation logic
-        return "Explanation placeholder"
+        """Explain a song's score using the same reasons as score_song."""
+        score, reasons = score_song(self._to_prefs(user), asdict(song))
+        details = "; ".join(reasons) if reasons else "no matching preferences"
+        return f"Score {score:.2f}: {details}"
 
 def load_songs(csv_path: str) -> List[Dict]:
     """Load songs from a CSV file into a list of dicts with numeric fields converted."""
