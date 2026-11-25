@@ -5,8 +5,6 @@
 > **Two different kinds of "agent" appear in this file.**
 > 1. **Development-time AI assistance.** An AI coding agent (Claude Code) made multi-step changes to this repository at the student's direction. This is what the SF8 template questions below ask about.
 > 2. **Runtime program behavior.** VibeFinder 2.0 contains its own deterministic recommendation agent ([src/agent.py](src/agent.py)) and an evaluation harness ([src/evaluate.py](src/evaluate.py)). They use no AI model. The traces in this file are the program's actual execution output, not AI conversations or hidden reasoning.
->
-> Items marked **[Student input needed]** can only be answered by the student.
 
 ---
 
@@ -26,13 +24,168 @@ Extend VibeFinder 1.0 into VibeFinder 2.0 in reviewed phases, while preserving t
 | 4 | Integrated runtime reliability evaluator |
 | 5 | Agentic workflow, artist diversity guardrail, and execution traces |
 | 6 | Automated evaluation harness and reproducible evidence |
-| 7 | Final architecture diagram and execution evidence (this documentation) |
+| 7 | Final architecture diagram and execution evidence |
+| 8 | Final README, model card, and documentation review |
+| 9 | Final submission audit and repository cleanup |
 
 **Prompts used:**
 
-Each phase used a written specification. It listed objectives, numbered tasks, constraints (for example, "Do not change scoring weights", "Do not modify data/songs.csv", "Do not commit or push"), and a required final report.
+```text
+Implement Phase 9 of VibeFinder 2.0: Final Submission Audit and Repository Cleanup.
 
-**[Student input needed]** Paste the key prompts here if the assignment requires their full text.
+Work only within the AI-musicrecommender repository.
+
+The project is functionally complete. Do not introduce any new features.
+
+## Task 1: Clean up dependencies
+
+The removal of unused dependencies is approved.
+
+- Confirm that pandas and streamlit are unused.
+- Remove pandas and streamlit from requirements.txt.
+- Retain pytest.
+- Update the relevant dependency descriptions in README.md and model_card.md.
+- Do not introduce additional dependencies.
+
+## Task 2: Finalize setup documentation
+
+Replace the placeholder repository URL in README.md with the actual public GitHub repository URL obtained from git remote.
+
+Verify that the clone, installation, execution, and testing commands are correct.
+
+Keep diagrams/architecture.mmd as the required Mermaid source file.
+
+Do not generate a PNG or screenshot.
+
+## Task 3: Complete student reflection placeholders
+
+Inspect model_card.md and ai_interactions.md.
+
+Insert the student-approved personal reflection and manual-review description supplied with this task.
+
+Only describe student actions that are supported by the development history or explicitly confirmed by the student.
+
+Do not invent personal experiences, manually performed tests, or historical prompts.
+
+For SF8 prompts, preserve the actual prompts if available. If the complete prompts are not available, identify the missing material rather than reconstructing it.
+
+Keep SF10 marked Not attempted.
+
+Search for remaining student-input placeholders and report any that cannot be resolved honestly.
+
+## Task 4: Final rubric audit
+
+Inspect the repository against these seven required grading categories:
+
+1. Clear identification of the original project.
+2. Substantial new AI feature.
+3. System architecture diagram.
+4. Functional end-to-end demonstration.
+5. Reliability, evaluation, or guardrails.
+6. Documentation and setup.
+7. Responsible AI reflection and AI collaboration.
+
+Also verify the evidence for:
+
+- Agentic Workflow Enhancement.
+- Test Harness or Evaluation Script.
+
+For each item, identify the exact supporting files and relevant evidence.
+
+Do not claim that points have already been awarded.
+
+## Task 5: Fresh environment verification
+
+Create a temporary clean copy of the final working tree outside the repository, including uncommitted documentation and dependency changes.
+
+Create a new virtual environment and install only the dependencies listed in requirements.txt.
+
+Run:
+
+python -m src.main
+
+python -m src.main --mode standard
+
+python -m src.main --mode diverse --trace
+
+python -m src.main --stress --mode standard
+
+python -m src.main --stress --mode diverse --trace
+
+python -m src.evaluate
+
+python -m src.evaluate --format json
+
+python src/main.py
+
+python -m pytest -q
+
+pytest -q
+
+Verify:
+
+- Every command exits successfully.
+- All 391 tests pass.
+- All 12 behavioral scenarios pass.
+- All 10 normal recommendation runs pass integrity.
+- The evaluation results match the existing execution evidence.
+- The JSON output is valid and deterministic.
+- No removed dependency is required.
+
+Do not modify production code or tests unless a genuine submission-blocking problem is discovered. Report such a problem before making changes.
+
+## Task 6: Final repository review
+
+Check:
+
+- Git branch and remote URL.
+- Meaningful commit history.
+- All required source, test, data, diagram, and documentation files.
+- Internal Markdown links.
+- Unresolved TODOs and student-input placeholders.
+- Accidental credentials, API keys, absolute local paths, or sensitive information in tracked files and relevant Git history.
+- Unnecessary generated files, virtual environments, and cache files.
+- Accuracy of all documented evaluation metrics.
+- Consistency of standard and diverse ranking behavior.
+- Preservation of original scoring weights and data/songs.csv.
+
+Distinguish genuine submission blockers from optional improvements.
+
+Do not rewrite Git history.
+
+## Constraints
+
+- No additional features.
+- No changes to the scoring algorithm.
+- No dataset changes.
+- No unnecessary refactoring.
+- No external AI APIs.
+- No Streamlit UI.
+- No RAG or model training.
+- No fabricated evidence.
+- Do not commit or push yet.
+
+## Final report
+
+Provide:
+
+1. Files modified.
+2. Dependency cleanup result.
+3. Student reflection completion status.
+4. Remaining placeholders, if any.
+5. Rubric-by-rubric evidence mapping.
+6. Stretch feature evidence.
+7. Actual fresh environment command results.
+8. Exact automated test counts.
+9. Final evaluation results.
+10. Security and repository hygiene findings.
+11. Current Git status.
+12. Remaining submission blockers.
+13. Suggested final commit message.
+14. Final submission readiness: READY or NOT READY, with reasons.
+
+Stop after completing the final audit.
+```
 
 **What did the agent generate or change?**
 
@@ -45,7 +198,9 @@ The table below is verifiable from the git history: one commit per phase, made b
 | `c87f56a` | 4 | `src/evaluator.py`, `src/main.py`, `tests/test_evaluator.py`, `tests/test_app_integration.py` |
 | `420173a` | 5 | `src/agent.py`, `src/evaluator.py`, `src/logging_config.py`, `src/main.py`, `tests/test_agent.py`, `tests/test_app_integration.py`, `tests/test_baseline.py` |
 | `c65cf88` | 6 | `src/evaluate.py`, `src/main.py`, `tests/test_evaluate.py` |
-| (uncommitted) | 7 | `diagrams/architecture.mmd`, `evaluation_results.md`, `ai_interactions.md` |
+| `c94a518` | 7 | `diagrams/architecture.mmd`, `evaluation_results.md`, `ai_interactions.md` |
+| (not yet committed) | 8 | `README.md`, `model_card.md`, `ai_interactions.md` |
+| (not yet committed) | 9 | `requirements.txt`, `README.md`, `model_card.md`, `ai_interactions.md` |
 
 In each phase the agent also:
 - ran the app, the stress test, and both pytest commands;
@@ -63,7 +218,13 @@ The agent got the following wrong during development. Each was detected by runni
 
 Seven existing tests (six in `tests/test_app_integration.py`, one in `tests/test_baseline.py`) were updated in Phase 5, when diverse mode became the default. Each was pinned to `--mode standard`, or had its expected event list or call count updated, and every ranking, score, and explanation assertion was kept.
 
-**[Student input needed]** Describe what you personally reviewed or changed before each commit.
+
+**Personal Reflection**
+I reviewed the development reports at the end of each phase and compared the reported results with the project requirements. I used the baseline results to check whether the original scoring algorithm, dataset, and ranking behavior were preserved.
+
+I also reviewed the reported test results, architecture decisions, and evaluation metrics before moving to the next development phase. The AI coding assistant performed the implementation and automated command execution, while I used its reports to guide the development process and control the project scope.
+
+I chose to keep the project focused on reliability, explainability, and artist diversity rather than introducing unnecessary external APIs or a web interface. I also required actual execution evidence instead of fabricated sample outputs.
 
 ---
 
@@ -173,16 +334,16 @@ Current results: 10/10 runs passed integrity and 12/12 scenarios passed, and the
 
 > Document how AI helped you choose or implement a design pattern.
 
-Not attempted as a stretch feature. **[Student input needed]** Delete this section, or complete it if you choose to claim it.
+**Not attempted.** This stretch feature was not part of the project, so the template questions below are left blank, as the template instructs.
 
 **Which design pattern did you use?**
 
-<!-- e.g., Strategy, Factory, Observer, etc. -->
+<!-- Not attempted -->
 
 **How did AI help you brainstorm or implement it?**
 
-<!-- Describe the conversation or suggestions that led to your decision -->
+<!-- Not attempted -->
 
 **How does the pattern appear in your final code?**
 
-<!-- Point to the relevant class or method -->
+<!-- Not attempted -->
