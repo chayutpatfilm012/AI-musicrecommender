@@ -71,9 +71,16 @@ def test_main_returns_zero_and_logs_lifecycle(monkeypatch, capsys, logs):
         "dataset_validation_completed",
         "preferences_validated",
         "scoring_completed",
+        # Phase 4: the evaluator runs after scoring. The default list has
+        # low-match ranks and Neon Echo twice, which are WARNING-level quality notes.
+        "evaluation_started",
+        "low_match_detected",
+        "repeated_artist_detected",
+        "evaluation_completed",
         "app_finished",
     ]
-    assert all(r.levelno == logging.INFO for r in logs.records if r.name == LOGGER_NAME)
+    assert not [r for r in logs.records if r.name == LOGGER_NAME and r.levelno >= logging.ERROR]
+    assert events(logs, logging.WARNING) == ["low_match_detected", "repeated_artist_detected"]
 
 
 def test_stress_mode_validates_every_profile_before_scoring(capsys, logs, scoring_spy):
@@ -225,6 +232,109 @@ def test_cli_subprocess_default_run_matches_baseline():
     assert "event=" not in result.stdout
     assert "Score: 4.48" in result.stdout
     assert "event=app_finished exit_code=0" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: reliability evaluation in the application workflow
+# ---------------------------------------------------------------------------
+
+ORIGINAL_DEFAULT_LINES = [
+    "1. Sunrise City - Neon Echo",
+    "   Score: 4.48",
+    "     * genre match (+2.0)",
+    "5. Night Drive Loop - Neon Echo",
+    "   Score: 0.95",
+]
+
+
+def corrupt_scores(real):
+    """A scoring engine that inflates the top score beyond the profile maximum."""
+    def broken(prefs, songs, k=5):
+        recs = real(prefs, songs, k=k)
+        song, _, explanation = recs[0]
+        return [(song, 99.0, explanation)] + recs[1:]
+    return broken
+
+
+def test_default_output_shows_evaluation_after_original_list(capsys):
+    assert main_module.run(stress=False) == main_module.EXIT_OK
+    out = capsys.readouterr().out
+    for line in ORIGINAL_DEFAULT_LINES:
+        assert line in out.splitlines()
+    assert out.index("5. Night Drive Loop") < out.index("Reliability check")
+    assert "Integrity: PASSED (9 checks)" in out
+    assert "  1. Sunrise City            4.48 / 4.50   99.6%  Strong Match" in out
+    assert "  ! Repeated artist: Neon Echo appears at ranks 1 and 5." in out
+    assert "not a confidence level" in out
+
+
+def test_stress_mode_evaluates_every_profile(capsys, logs):
+    assert main_module.main(["--stress"]) == main_module.EXIT_OK
+    out = capsys.readouterr().out
+    assert out.count("Reliability check") == 4
+    assert out.count("Integrity: PASSED") == 4
+    assert "max possible 5.50 for this profile" in out  # Chill Lofi
+    assert "No strong match: the best recommendation reaches only 65.1%" in out  # Conflicting
+    assert events(logs).count("evaluation_started") == 4
+    assert events(logs).count("evaluation_completed") == 4
+    assert "recommendation_blocked" not in events(logs)
+
+
+def test_invalid_recommendations_are_blocked_in_default_mode(monkeypatch, capsys, logs):
+    monkeypatch.setattr(main_module, "recommend_songs", corrupt_scores(main_module.recommend_songs))
+
+    exit_code = main_module.run(stress=False)
+    captured = capsys.readouterr()
+
+    assert exit_code == main_module.EXIT_RECOMMENDATION_BLOCKED
+    assert "Top 5 recommendations" not in captured.out
+    assert "Sunrise City" not in captured.out
+    assert "Error: Recommendations blocked: 2 integrity check failure(s):" in captured.err
+    assert "rank 1: score 99.00 is outside 0-4.50 for this profile" in captured.err
+    assert "rank 1: score 99.00 does not match the scoring rules (4.48)" in captured.err
+    assert "Traceback" not in captured.err
+    assert events(logs, logging.ERROR) == ["integrity_check_failed", "integrity_check_failed", "recommendation_blocked"]
+    blocked = [r.getMessage() for r in logs.records if "recommendation_blocked" in r.getMessage()][0]
+    assert "codes=score_mismatch,score_out_of_range" in blocked
+    # Match stats computed from the corrupted score are not logged as if meaningful.
+    completed = [r.getMessage() for r in logs.records if "evaluation_completed" in r.getMessage()][0]
+    assert "passed=False" in completed and "top_match_pct=- top_level=-" in completed
+
+
+def test_blocked_profile_in_stress_mode_does_not_stop_the_others(monkeypatch, capsys):
+    real = main_module.recommend_songs
+
+    def broken_for_rock(prefs, songs, k=5):
+        recs = real(prefs, songs, k=k)
+        return list(reversed(recs)) if prefs["genre"] == "rock" else recs
+
+    monkeypatch.setattr(main_module, "recommend_songs", broken_for_rock)
+    assert main_module.main(["--stress"]) == main_module.EXIT_RECOMMENDATION_BLOCKED
+    captured = capsys.readouterr()
+    assert captured.out.count("Reliability check") == 3
+    assert "STRESS TEST 3: Intense Rock" not in captured.out
+    assert "Error: STRESS TEST 3: Intense Rock: Recommendations blocked:" in captured.err
+    assert "scores higher than rank" in captured.err
+
+
+def test_invalid_input_and_blocked_results_keep_distinct_exit_codes(monkeypatch, capsys):
+    profiles = dict(main_module.STRESS_PROFILES)
+    profiles["Broken"] = {"genre": "pop", "mood": "happy", "energy": 2.0}
+    monkeypatch.setattr(main_module, "STRESS_PROFILES", profiles)
+    assert main_module.main(["--stress"]) == main_module.EXIT_INVALID_INPUT
+
+    monkeypatch.setattr(main_module, "recommend_songs", corrupt_scores(main_module.recommend_songs))
+    assert main_module.main(["--stress"]) == main_module.EXIT_RECOMMENDATION_BLOCKED  # blocked outranks invalid
+    capsys.readouterr()
+
+
+def test_quality_warning_logs_omit_preference_values(logs):
+    prefs = {"genre": "secret-genre", "mood": "secret-mood", "energy": 0.5}
+    assert main_module.run(stress=False, user_prefs=prefs) == main_module.EXIT_OK
+    messages = [r.getMessage() for r in logs.records]
+    assert any("code=unknown_genre" in m for m in messages)
+    assert any("code=unknown_mood" in m for m in messages)
+    assert not any("secret" in m for m in messages)
 
 
 # ---------------------------------------------------------------------------
