@@ -1,0 +1,70 @@
+flowchart TD
+    %% VibeFinder 2.0 architecture. Solid arrows: runtime control flow.
+    %% Dotted arrows: logging/trace output and offline testing/evaluation.
+    User(["User"]) --> CLI["CLI: python -m src.main<br/>--mode diverse (default) | standard<br/>--stress, --trace, --log-level"]
+
+    subgraph RUNTIME["Runtime application (src/main.py)"]
+        direction TB
+        CSV[("data/songs.csv<br/>20 songs")] --> CatVal["Catalog validation<br/>validation.load_validated_songs"]
+        CLI --> CatVal
+        CatVal --> CatOK{"Catalog valid?"}
+        CatOK -->|No| CatErr["Safe error message<br/>exit 1"]
+        CatOK -->|Yes| Profiles["Listener profile<br/>default or 4 stress profiles"]
+        Profiles --> PrefVal["Input validation<br/>validation.validate_user_prefs"]
+        PrefVal --> PrefOK{"Preferences valid?"}
+        PrefOK -->|No| PrefErr["Rejected before scoring<br/>exit 1; stress mode skips the profile"]
+
+        subgraph AGENT["Recommendation agent (src/agent.py)"]
+            direction TB
+            Plan["PLAN<br/>k = 5, ranking policy"] --> Act["ACT<br/>original weighted scoring engine<br/>recommender.recommend_songs"]
+            Act --> Check["CHECK: initial reliability evaluation<br/>evaluator, standard rules, 9 integrity checks"]
+            Check --> IntOK{"Integrity passed?"}
+            IntOK -->|Yes| Decide{"DECIDE<br/>policy and repeated artists"}
+            Decide -->|"standard policy"| Output
+            Decide -->|"diverse, artists already unique"| Recheck
+            Decide -->|"diverse, repeated artist"| Correct["CORRECT, at most one pass<br/>best song per artist from the full ranked catalog"]
+            Correct --> Recheck["RECHECK: policy-aware verification<br/>diverse rules, 10 integrity checks"]
+            Recheck --> FinalOK{"Integrity passed?"}
+            FinalOK -->|Yes| Output["OUTPUT<br/>verified list, evaluation, trace"]
+        end
+
+        PrefOK -->|Yes| Plan
+        IntOK -->|"No: not re-ranked"| Block["BLOCK<br/>no list shown, safe error, exit 3"]
+        FinalOK -->|"No: correction limit reached"| Block
+        Output --> Result["Explainable recommendations<br/>raw scores and reasons, heuristic match %,<br/>quality warnings"]
+        Result --> User
+    end
+
+    Logs[["Structured logs on stderr<br/>logging_config: key=value events"]]
+    Trace[["Execution trace<br/>shown with --trace"]]
+    CatVal -.-> Logs
+    PrefVal -.-> Logs
+    AGENT -.-> Logs
+    AGENT -.-> Trace
+    Block -.-> Logs
+
+    subgraph OFFLINE["Offline testing and evaluation (not part of a user run)"]
+        direction TB
+        Tests["Automated tests: pytest<br/>baseline, validation, evaluator,<br/>agent, integration, harness"]
+        Harness["Evaluation harness: python -m src.evaluate<br/>5 profiles x 2 policies + 12 scenarios"]
+        Harness --> Metrics["Evaluation metrics<br/>integrity pass rate, unique artists,<br/>match %, corrections, scenario pass rate<br/>text or deterministic JSON"]
+    end
+
+    Tests -.-> CatVal
+    Tests -.-> AGENT
+    Harness -.->|"loads catalog"| CatVal
+    Harness -.->|"calls recommend_for_profile"| PrefVal
+
+    classDef io fill:#f1f5f9,stroke:#475569,color:#111827
+    classDef check fill:#fef9c3,stroke:#ca8a04,color:#111827
+    classDef engine fill:#dbeafe,stroke:#2563eb,color:#111827
+    classDef success fill:#dcfce7,stroke:#16a34a,color:#111827
+    classDef failure fill:#fee2e2,stroke:#dc2626,color:#111827
+    classDef offline fill:#f3e8ff,stroke:#9333ea,color:#111827
+
+    class User,CLI,CSV,Profiles,Logs,Trace io
+    class CatVal,PrefVal,Check,Recheck,CatOK,PrefOK,IntOK,FinalOK,Decide check
+    class Plan,Act,Correct engine
+    class Output,Result success
+    class CatErr,PrefErr,Block failure
+    class Tests,Harness,Metrics offline
