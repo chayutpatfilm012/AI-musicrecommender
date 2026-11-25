@@ -157,9 +157,14 @@ def recommend_for_profile(
     k: int = 5,
     profile_name: str = "default",
     mode: str = DEFAULT_MODE,
+    scorer=None,
 ) -> AgentResult:
     """
     Validate a profile, then run it through the recommendation agent.
+
+    `scorer` replaces the scoring engine (dependency injection for simulated
+    failures in tests and the evaluation harness); by default it is the
+    original recommend_songs().
 
     Raises ValidationError for bad input and AgentBlockedError (a
     RecommendationBlockedError) when a list fails an integrity check.
@@ -176,7 +181,7 @@ def recommend_for_profile(
     log_event(logger, logging.INFO, "preferences_validated", profile=profile_name, fields=list(prefs))
 
     # recommend_songs is looked up here so tests can substitute a faulty engine.
-    agent = RecommendationAgent(songs, policy=mode, k=k, scorer=recommend_songs)
+    agent = RecommendationAgent(songs, policy=mode, k=k, scorer=scorer or recommend_songs)
     return agent.run(prefs, profile_name=profile_name)
 
 
