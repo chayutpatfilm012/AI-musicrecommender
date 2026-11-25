@@ -54,7 +54,11 @@ def _format_value(value: Any) -> str:
     return f'"{text}"' if (" " in text or not text) else text
 
 
+def format_fields(**fields: Any) -> str:
+    """Format fields as `key=value key=value`, in the order given."""
+    return " ".join(f"{key}={_format_value(value)}" for key, value in fields.items())
+
+
 def log_event(logger: logging.Logger, level: int, event: str, **fields: Any) -> None:
     """Log one event as `event=<name> key=value ...`."""
-    parts = [f"event={event}"] + [f"{key}={_format_value(value)}" for key, value in fields.items()]
-    logger.log(level, " ".join(parts))
+    logger.log(level, " ".join([f"event={event}", format_fields(**fields)]).rstrip())

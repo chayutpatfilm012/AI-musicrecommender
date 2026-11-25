@@ -62,7 +62,9 @@ def test_default_profile_constant_matches_baseline():
 
 
 def test_main_returns_zero_and_logs_lifecycle(monkeypatch, capsys, logs):
-    monkeypatch.setattr(sys, "argv", ["src.main"])
+    # Phase 5: pinned to standard mode (the VibeFinder 1.0 ranking); the agent's
+    # PLAN/ACT/CHECK/DECIDE/OUTPUT steps are logged as agent_step events.
+    monkeypatch.setattr(sys, "argv", ["src.main", "--mode", "standard"])
     assert main_module.main() == 0
     assert "1. Sunrise City - Neon Echo" in capsys.readouterr().out
     assert events(logs) == [
@@ -70,13 +72,18 @@ def test_main_returns_zero_and_logs_lifecycle(monkeypatch, capsys, logs):
         "dataset_loaded",
         "dataset_validation_completed",
         "preferences_validated",
+        "agent_step",  # PLAN
         "scoring_completed",
+        "agent_step",  # ACT
         # Phase 4: the evaluator runs after scoring. The default list has
         # low-match ranks and Neon Echo twice, which are WARNING-level quality notes.
         "evaluation_started",
         "low_match_detected",
         "repeated_artist_detected",
         "evaluation_completed",
+        "agent_step",  # CHECK
+        "agent_step",  # DECIDE (standard policy: no correction)
+        "agent_step",  # OUTPUT
         "app_finished",
     ]
     assert not [r for r in logs.records if r.name == LOGGER_NAME and r.levelno >= logging.ERROR]
@@ -84,7 +91,9 @@ def test_main_returns_zero_and_logs_lifecycle(monkeypatch, capsys, logs):
 
 
 def test_stress_mode_validates_every_profile_before_scoring(capsys, logs, scoring_spy):
-    assert main_module.main(["--stress"]) == 0
+    # Standard mode scores each profile exactly once (diverse mode adds one
+    # full-catalog scoring call per corrected profile; see test_agent.py).
+    assert main_module.main(["--stress", "--mode", "standard"]) == 0
     assert len(scoring_spy) == 4
     assert events(logs).count("preferences_validated") == 4
     assert events(logs).count("scoring_completed") == 4
@@ -149,9 +158,9 @@ def test_invalid_stress_profile_is_reported_and_others_still_run(monkeypatch, ca
     profiles["Broken"] = {"genre": "pop", "mood": "happy", "energy": 2.0}
     monkeypatch.setattr(main_module, "STRESS_PROFILES", profiles)
 
-    assert main_module.main(["--stress"]) == main_module.EXIT_INVALID_INPUT
+    assert main_module.main(["--stress", "--mode", "standard"]) == main_module.EXIT_INVALID_INPUT
     captured = capsys.readouterr()
-    assert len(scoring_spy) == 4
+    assert len(scoring_spy) == 4  # the invalid profile never reaches scoring
     assert "Error: STRESS TEST 5: Broken: Invalid listener preferences: energy must be between 0 and 1, got 2.0" in captured.err
     assert captured.out.count("STRESS TEST") == 4
     failure = [r for r in logs.records if "validation_failed" in r.getMessage()]
@@ -257,7 +266,8 @@ def corrupt_scores(real):
 
 
 def test_default_output_shows_evaluation_after_original_list(capsys):
-    assert main_module.run(stress=False) == main_module.EXIT_OK
+    # Standard mode: the original VibeFinder 1.0 list, with Neon Echo repeated as a warning.
+    assert main_module.run(stress=False, mode="standard") == main_module.EXIT_OK
     out = capsys.readouterr().out
     for line in ORIGINAL_DEFAULT_LINES:
         assert line in out.splitlines()
@@ -269,7 +279,8 @@ def test_default_output_shows_evaluation_after_original_list(capsys):
 
 
 def test_stress_mode_evaluates_every_profile(capsys, logs):
-    assert main_module.main(["--stress"]) == main_module.EXIT_OK
+    # Standard mode evaluates each list once; diverse mode adds a policy recheck.
+    assert main_module.main(["--stress", "--mode", "standard"]) == main_module.EXIT_OK
     out = capsys.readouterr().out
     assert out.count("Reliability check") == 4
     assert out.count("Integrity: PASSED") == 4
@@ -293,7 +304,13 @@ def test_invalid_recommendations_are_blocked_in_default_mode(monkeypatch, capsys
     assert "rank 1: score 99.00 is outside 0-4.50 for this profile" in captured.err
     assert "rank 1: score 99.00 does not match the scoring rules (4.48)" in captured.err
     assert "Traceback" not in captured.err
-    assert events(logs, logging.ERROR) == ["integrity_check_failed", "integrity_check_failed", "recommendation_blocked"]
+    # Phase 5: the agent also records its CHECK and BLOCK steps at ERROR level.
+    assert events(logs, logging.ERROR) == [
+        "integrity_check_failed", "integrity_check_failed",
+        "agent_step",  # CHECK failed
+        "agent_step",  # BLOCK
+        "recommendation_blocked",
+    ]
     blocked = [r.getMessage() for r in logs.records if "recommendation_blocked" in r.getMessage()][0]
     assert "codes=score_mismatch,score_out_of_range" in blocked
     # Match stats computed from the corrupted score are not logged as if meaningful.

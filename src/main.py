@@ -1,37 +1,40 @@
 """
-Command line runner for the Music Recommender Simulation.
+Command line runner for the Music Recommender Simulation (VibeFinder 2.0).
 
-Loads the song catalog, scores every song against a listener profile using
-the functions in recommender.py, and prints the top 5 recommendations with
-the reasons for each score.
+Loads the song catalog, validates it, and runs each listener profile through
+the recommendation agent (see agent.py):
 
-The catalog and every listener profile are validated (see validation.py)
-before anything is scored, and every recommendation list is checked by the
-reliability evaluator (see evaluator.py) before it is shown. A list that
-fails an integrity check is blocked; quality warnings are shown with it.
-Recommendations go to stdout; structured logs and error messages go to stderr.
+    validate preferences -> PLAN -> ACT (original scoring) -> CHECK (evaluator)
+    -> DECIDE -> CORRECT (artist diversity, at most once) -> RECHECK -> OUTPUT
+
+A list that fails an integrity check is blocked; quality warnings are shown
+with it. Recommendations go to stdout; structured logs and errors go to stderr.
 
 Usage:
-    python -m src.main                    # default profile (pop, happy, energy 0.8)
-    python -m src.main --stress           # four stress-test profiles
-    python -m src.main --log-level ERROR  # hide INFO/WARNING logs
+    python -m src.main                            # default profile, diverse mode
+    python -m src.main --mode standard            # original VibeFinder 1.0 ranking
+    python -m src.main --mode diverse --trace     # show the agent's execution trace
+    python -m src.main --stress [--mode ...]      # four stress-test profiles
+    python -m src.main --log-level ERROR          # hide INFO/WARNING logs
 """
 
 import argparse
 import logging
 import os
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 try:
     # Works with `python -m src.main` from the project root.
-    from src.evaluator import EvaluationResult, RecommendationBlockedError, evaluate_recommendations
+    from src.agent import AgentBlockedError, AgentResult, RecommendationAgent
+    from src.evaluator import DIVERSE_POLICY, RANKING_POLICIES, STANDARD_POLICY, RecommendationBlockedError
     from src.logging_config import configure_logging, get_logger, log_event
     from src.recommender import recommend_songs
     from src.validation import DatasetError, ValidationError, load_validated_songs, validate_user_prefs
 except ImportError:
     # Works with `python src/main.py`.
-    from evaluator import EvaluationResult, RecommendationBlockedError, evaluate_recommendations
+    from agent import AgentBlockedError, AgentResult, RecommendationAgent
+    from evaluator import DIVERSE_POLICY, RANKING_POLICIES, STANDARD_POLICY, RecommendationBlockedError
     from logging_config import configure_logging, get_logger, log_event
     from recommender import recommend_songs
     from validation import DatasetError, ValidationError, load_validated_songs, validate_user_prefs
@@ -39,6 +42,7 @@ except ImportError:
 
 WIDTH = 60
 CATALOG_PATH = "data/songs.csv"
+DEFAULT_MODE = DIVERSE_POLICY
 
 EXIT_OK = 0
 EXIT_INVALID_INPUT = 1
@@ -62,11 +66,9 @@ STRESS_PROFILES = {
     "Conflicting Preferences": {"genre": "metal", "mood": "peaceful", "energy": 0.90},
 }
 
-# Quality-warning codes that get their own log event name.
-WARNING_EVENTS = {
-    "low_match": "low_match_detected",
-    "no_strong_match": "low_match_detected",
-    "repeated_artist": "repeated_artist_detected",
+POLICY_DESCRIPTIONS = {
+    STANDARD_POLICY: "standard (original VibeFinder 1.0 top-5 ranking)",
+    DIVERSE_POLICY: "diverse (highest-ranked songs, at most one per artist)",
 }
 
 logger = get_logger()
@@ -98,10 +100,29 @@ def print_recommendations(recommendations: list) -> None:
         print("-" * WIDTH)
 
 
-def print_evaluation(evaluation: EvaluationResult) -> None:
-    """Print the reliability summary after the (unchanged) recommendation list."""
+def _describe_song(entry) -> str:
+    song = entry[0]
+    return f"#{song['id']} {song['title']} ({song['artist']}, {entry[1]:.2f})"
+
+
+def print_evaluation(result: AgentResult) -> None:
+    """Print the policy, any correction, and the reliability summary after the list."""
+    evaluation = result.evaluation
     print("Reliability check")
     print("-" * WIDTH)
+    print(f"Ranking policy: {POLICY_DESCRIPTIONS[result.policy]}")
+    if result.corrected:
+        final_ids = {entry[0]["id"] for entry in result.recommendations}
+        initial_ids = {entry[0]["id"] for entry in result.initial_recommendations}
+        removed = [e for e in result.initial_recommendations if e[0]["id"] not in final_ids]
+        added = [e for e in result.recommendations if e[0]["id"] not in initial_ids]
+        print(f"Diversity correction: {len(removed)} song(s) replaced to avoid repeated artists")
+        for entry in removed:
+            print(f"  - removed {_describe_song(entry)}")
+        for entry in added:
+            print(f"  + added   {_describe_song(entry)}")
+    elif result.policy == DIVERSE_POLICY:
+        print("Diversity correction: not needed (every artist is already unique)")
     print(f"Integrity: PASSED ({len(evaluation.checks)} checks)")
     print(f"Match scores (raw score / max possible {evaluation.max_score:.2f} for this profile):")
     for song in evaluation.songs:
@@ -118,41 +139,30 @@ def print_evaluation(evaluation: EvaluationResult) -> None:
     print("-" * WIDTH)
 
 
+def print_trace(trace) -> None:
+    print("Execution trace (actual agent steps)")
+    print("-" * WIDTH)
+    for event in trace:
+        print(f"  {event.format()}")
+    print("-" * WIDTH)
+
+
 def print_error(message: str) -> None:
     print(f"Error: {message}", file=sys.stderr)
 
 
-def log_evaluation(evaluation: EvaluationResult, profile_name: str) -> None:
-    for issue in evaluation.critical:
-        log_event(
-            logger, logging.ERROR, "integrity_check_failed",
-            profile=profile_name, code=issue.code, ranks=list(issue.ranks) or "-",
-        )
-    for issue in evaluation.warnings:
-        event = WARNING_EVENTS.get(issue.code, "quality_warning_detected")
-        log_event(
-            logger, logging.WARNING, event,
-            profile=profile_name, code=issue.code, ranks=list(issue.ranks) or "-",
-        )
-    # Match stats from a list that failed integrity checks are untrustworthy; don't log them.
-    top = evaluation.top if evaluation.passed else None
-    log_event(
-        logger, logging.INFO, "evaluation_completed",
-        profile=profile_name, passed=evaluation.passed,
-        critical=len(evaluation.critical), warnings=len(evaluation.warnings),
-        max_score=evaluation.max_score,
-        top_match_pct=top.match_percent if top else "-",
-        top_level=top.match_level if top else "-",
-    )
-
-
 def recommend_for_profile(
-    user_prefs: Dict, songs: List[Dict], k: int = 5, profile_name: str = "default"
-) -> Tuple[list, EvaluationResult]:
+    user_prefs: Dict,
+    songs: List[Dict],
+    k: int = 5,
+    profile_name: str = "default",
+    mode: str = DEFAULT_MODE,
+) -> AgentResult:
     """
-    Validate a profile, score it with the unchanged recommend_songs(), then
-    evaluate the result. Raises ValidationError for bad input and
-    RecommendationBlockedError when the result fails an integrity check.
+    Validate a profile, then run it through the recommendation agent.
+
+    Raises ValidationError for bad input and AgentBlockedError (a
+    RecommendationBlockedError) when a list fails an integrity check.
     """
     try:
         prefs = validate_user_prefs(user_prefs)
@@ -165,47 +175,41 @@ def recommend_for_profile(
     # Log which preferences were given, not their values.
     log_event(logger, logging.INFO, "preferences_validated", profile=profile_name, fields=list(prefs))
 
-    recommendations = recommend_songs(prefs, songs, k=k)
-    log_event(
-        logger, logging.INFO, "scoring_completed",
-        profile=profile_name, candidates=len(songs), returned=len(recommendations),
-        top_score=recommendations[0][1] if recommendations else 0.0,
-    )
-
-    log_event(
-        logger, logging.INFO, "evaluation_started",
-        profile=profile_name, returned=len(recommendations), requested=k,
-    )
-    evaluation = evaluate_recommendations(prefs, recommendations, songs, k)
-    log_evaluation(evaluation, profile_name)
-    if not evaluation.passed:
-        log_event(
-            logger, logging.ERROR, "recommendation_blocked",
-            profile=profile_name, failures=len(evaluation.critical),
-            codes=sorted({i.code for i in evaluation.critical}),
-        )
-        raise RecommendationBlockedError(evaluation)
-    return recommendations, evaluation
+    # recommend_songs is looked up here so tests can substitute a faulty engine.
+    agent = RecommendationAgent(songs, policy=mode, k=k, scorer=recommend_songs)
+    return agent.run(prefs, profile_name=profile_name)
 
 
-def run_stress_test(songs: list) -> int:
+def present(result: AgentResult, prefs: Dict, title: str, show_trace: bool) -> None:
+    print_profile(prefs, title=title)
+    print_recommendations(result.recommendations)
+    print_evaluation(result)
+    if show_trace:
+        print_trace(result.trace)
+
+
+def report_blocked(exc: RecommendationBlockedError, prefix: str, show_trace: bool) -> None:
+    print_error(f"{prefix}{exc}")
+    if show_trace and isinstance(exc, AgentBlockedError):
+        print_trace(exc.trace)
+
+
+def run_stress_test(songs: list, mode: str = DEFAULT_MODE, show_trace: bool = False) -> int:
     """Run every stress profile; an invalid or blocked profile is reported and skipped."""
     exit_code = EXIT_OK
     for number, (name, user_prefs) in enumerate(STRESS_PROFILES.items(), start=1):
         title = f"STRESS TEST {number}: {name}"
         try:
-            recommendations, evaluation = recommend_for_profile(user_prefs, songs, k=5, profile_name=name)
+            result = recommend_for_profile(user_prefs, songs, k=5, profile_name=name, mode=mode)
         except ValidationError as exc:
             exit_code = max(exit_code, EXIT_INVALID_INPUT)
             print_error(f"{title}: {exc}")
             continue
         except RecommendationBlockedError as exc:
             exit_code = max(exit_code, EXIT_RECOMMENDATION_BLOCKED)
-            print_error(f"{title}: {exc}")
+            report_blocked(exc, f"{title}: ", show_trace)
             continue
-        print_profile(user_prefs, title=title)
-        print_recommendations(recommendations)
-        print_evaluation(evaluation)
+        present(result, user_prefs, title, show_trace)
         print()
     return exit_code
 
@@ -222,7 +226,13 @@ def load_catalog(csv_path: str = CATALOG_PATH) -> List[Dict]:
     return songs
 
 
-def run(stress: bool, csv_path: str = CATALOG_PATH, user_prefs: Optional[Dict] = None) -> int:
+def run(
+    stress: bool,
+    csv_path: str = CATALOG_PATH,
+    user_prefs: Optional[Dict] = None,
+    mode: str = DEFAULT_MODE,
+    show_trace: bool = False,
+) -> int:
     """Run one application session and return its exit code."""
     try:
         songs = load_catalog(csv_path)
@@ -236,30 +246,40 @@ def run(stress: bool, csv_path: str = CATALOG_PATH, user_prefs: Optional[Dict] =
     print(f"Loaded {len(songs)} songs.\n")
 
     if stress:
-        return run_stress_test(songs)
+        return run_stress_test(songs, mode=mode, show_trace=show_trace)
 
     prefs = DEFAULT_PROFILE if user_prefs is None else user_prefs
     try:
-        recommendations, evaluation = recommend_for_profile(prefs, songs, k=5)
+        result = recommend_for_profile(prefs, songs, k=5, mode=mode)
     except ValidationError as exc:
         print_error(str(exc))
         return EXIT_INVALID_INPUT
     except RecommendationBlockedError as exc:
-        print_error(str(exc))
+        report_blocked(exc, "", show_trace)
         return EXIT_RECOMMENDATION_BLOCKED
 
-    print_profile(prefs)
-    print_recommendations(recommendations)
-    print_evaluation(evaluation)
+    present(result, prefs, "MUSIC RECOMMENDER", show_trace)
     return EXIT_OK
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Music Recommender Simulation")
+    parser = argparse.ArgumentParser(description="Music Recommender Simulation (VibeFinder 2.0)")
     parser.add_argument(
         "--stress",
         action="store_true",
         help="run the top 5 for each stress-test profile instead of the default profile",
+    )
+    parser.add_argument(
+        "--mode",
+        default=DEFAULT_MODE,
+        choices=list(RANKING_POLICIES),
+        help="ranking policy: 'diverse' (default; at most one song per artist) or "
+             "'standard' (original VibeFinder 1.0 ranking)",
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="print the agent's execution trace (plan, act, check, decide, correct, recheck)",
     )
     parser.add_argument(
         "--log-level",
@@ -270,10 +290,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     configure_logging(args.log_level)
-    log_event(logger, logging.INFO, "app_started", mode="stress" if args.stress else "default")
+    log_event(logger, logging.INFO, "app_started", mode="stress" if args.stress else "default", policy=args.mode)
 
     try:
-        exit_code = run(args.stress)
+        exit_code = run(args.stress, mode=args.mode, show_trace=args.trace)
     except Exception as exc:  # last-resort guard: no raw traceback in normal CLI use
         log_event(logger, logging.ERROR, "app_error", error_type=type(exc).__name__)
         logger.debug("Traceback for unexpected error", exc_info=True)

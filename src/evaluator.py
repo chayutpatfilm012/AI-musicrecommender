@@ -43,7 +43,11 @@ LOW_MATCH = "Low Match"
 # Absorbs float rounding, e.g. 3.6 / 4.5 == 0.7999999999999999.
 _CLASSIFY_EPSILON = 1e-9
 
-INTEGRITY_CHECKS = (
+STANDARD_POLICY = "standard"  # original top-k ranking (VibeFinder 1.0)
+DIVERSE_POLICY = "diverse"    # highest-ranked songs, at most one per artist
+RANKING_POLICIES = (STANDARD_POLICY, DIVERSE_POLICY)
+
+_COMMON_CHECKS = (
     "well_formed",
     "result_count",
     "finite_scores",
@@ -52,8 +56,11 @@ INTEGRITY_CHECKS = (
     "unique_ids",
     "catalog_match",
     "scoring_consistency",
-    "top_scores_returned",
 )
+# Standard: no omitted song may outscore the lowest returned song.
+INTEGRITY_CHECKS = _COMMON_CHECKS + ("top_scores_returned",)
+# Diverse: one song per artist, and exactly the highest-ranked eligible songs.
+DIVERSE_INTEGRITY_CHECKS = _COMMON_CHECKS + ("artist_uniqueness", "diverse_selection")
 
 
 @dataclass(frozen=True)
@@ -63,14 +70,22 @@ class EvaluationConfig:
     strong_threshold: float = 0.80
     moderate_threshold: float = 0.60
     score_tolerance: float = 1e-9
-    # Require that no omitted catalog song outscores the lowest returned song.
+    # Require that the list contains the songs the ranking policy says it should
+    # (standard: top scores; diverse: the best song of each top-ranked artist).
     require_top_scores: bool = True
+    ranking_policy: str = STANDARD_POLICY
 
     def __post_init__(self):
         if not 0 <= self.moderate_threshold <= self.strong_threshold <= 1:
             raise ValueError("thresholds must satisfy 0 <= moderate_threshold <= strong_threshold <= 1")
         if self.score_tolerance < 0:
             raise ValueError("score_tolerance must not be negative")
+        if self.ranking_policy not in RANKING_POLICIES:
+            raise ValueError(f"ranking_policy must be one of {', '.join(RANKING_POLICIES)}")
+
+    @property
+    def checks(self) -> Sequence[str]:
+        return DIVERSE_INTEGRITY_CHECKS if self.ranking_policy == DIVERSE_POLICY else INTEGRITY_CHECKS
 
 
 DEFAULT_CONFIG = EvaluationConfig()
@@ -111,6 +126,7 @@ class EvaluationResult:
     songs: List[SongEvaluation] = field(default_factory=list)
     issues: List[Issue] = field(default_factory=list)
     checks: Sequence[str] = INTEGRITY_CHECKS
+    policy: str = STANDARD_POLICY
 
     @property
     def critical(self) -> List[Issue]:
@@ -202,6 +218,34 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, Real) and not isinstance(value, bool)
 
 
+def artist_key(artist: Any) -> str:
+    """Artist identity for diversity: case-insensitive, surrounding whitespace ignored."""
+    return _norm(artist)
+
+
+def _full_ranking(user_prefs: Mapping, catalog: Sequence[Mapping]) -> List[Mapping]:
+    """Every catalog song in standard rank order, recomputed from trusted records.
+
+    sorted() is stable, so tied scores keep catalog order, exactly like recommend_songs().
+    """
+    scores = [score_song(user_prefs, song)[0] for song in catalog]
+    order = sorted(range(len(catalog)), key=lambda i: scores[i], reverse=True)
+    return [catalog[i] for i in order]
+
+
+def expected_diverse_ids(user_prefs: Mapping, catalog: Sequence[Mapping], k: int) -> List[Any]:
+    """Ids the diverse policy must return: each artist's best song, highest-ranked first."""
+    chosen, seen = [], set()
+    for song in _full_ranking(user_prefs, catalog):
+        if len(chosen) >= k:
+            break
+        key = artist_key(song["artist"])
+        if key not in seen:
+            seen.add(key)
+            chosen.append(song["id"])
+    return chosen
+
+
 def _ranks_text(ranks: Sequence[int]) -> str:
     ranks = list(ranks)
     if len(ranks) == 1:
@@ -224,6 +268,7 @@ def evaluate_recommendations(
     `result.passed` is False.
     """
     tol = config.score_tolerance
+    diverse = config.ranking_policy == DIVERSE_POLICY
     max_score = max_possible_score(user_prefs)
     catalog_by_id = {song["id"]: song for song in catalog}
     result = EvaluationResult(
@@ -231,6 +276,8 @@ def evaluate_recommendations(
         requested=k,
         returned=len(recommendations) if isinstance(recommendations, (list, tuple)) else 0,
         catalog_size=len(catalog),
+        checks=config.checks,
+        policy=config.ranking_policy,
     )
 
     def fail(code: str, message: str, ranks=()):
@@ -255,7 +302,9 @@ def evaluate_recommendations(
         items.append((rank, item[0], item[1], item[2]))
 
     # --- result_count ------------------------------------------------------
-    expected_count = max(0, min(k, len(catalog)))
+    # Diverse lists can only be as long as the number of distinct artists.
+    available = len({artist_key(s["artist"]) for s in catalog}) if diverse else len(catalog)
+    expected_count = max(0, min(k, available))
     if len(recommendations) > max(k, 0):
         fail("too_many_results", f"{len(recommendations)} recommendations returned but only {k} requested")
     elif not recommendations and expected_count > 0:
@@ -325,8 +374,43 @@ def evaluate_recommendations(
             fail("explanation_mismatch", f"rank {rank}: explanation does not match the scoring rules", [rank])
         trusted_items.append((rank, trusted, expected_score))
 
-    # --- top_scores_returned -----------------------------------------------
-    if config.require_top_scores and trusted_items and not result.critical:
+    # --- artist_uniqueness (diverse) ---------------------------------------
+    if diverse:
+        first_artist_rank: Dict[str, int] = {}
+        for rank, song, _, _ in items:
+            key = artist_key(song.get("artist"))
+            if key in first_artist_rank:
+                fail(
+                    "repeated_artist_in_diverse_list",
+                    f"rank {rank}: artist {song.get('artist')!r} already appears at rank "
+                    f"{first_artist_rank[key]} (diverse mode allows one song per artist)",
+                    [first_artist_rank[key], rank],
+                )
+            else:
+                first_artist_rank[key] = rank
+
+    # --- diverse_selection (diverse) ---------------------------------------
+    if diverse and config.require_top_scores and trusted_items and not result.critical:
+        expected = expected_diverse_ids(user_prefs, catalog, k)
+        returned = [song["id"] for _, song, _ in trusted_items]
+        omitted = [i for i in expected if i not in returned]
+        ineligible = [i for i in returned if i not in expected]
+        if omitted:
+            fail(
+                "eligible_song_omitted",
+                f"higher-ranked eligible song id(s) {', '.join(map(str, omitted))} were left out",
+            )
+        if ineligible:
+            fail(
+                "ineligible_song_selected",
+                f"song id(s) {', '.join(map(str, ineligible))} are not among the highest-ranked "
+                f"songs of distinct artists",
+            )
+        if not omitted and not ineligible and returned != expected:
+            fail("diverse_order_mismatch", "songs are not in the diverse policy's rank order (ties keep catalog order)")
+
+    # --- top_scores_returned (standard) ------------------------------------
+    if not diverse and config.require_top_scores and trusted_items and not result.critical:
         returned_ids = {song["id"] for _, song, _ in trusted_items}
         lowest = min(score for _, _, score in trusted_items)
         omitted = [
@@ -387,8 +471,14 @@ def _add_quality_warnings(result, user_prefs, catalog, config, warn) -> None:
 
     # Fewer songs than requested (only possible when the catalog is smaller than k).
     if result.returned < result.requested:
-        warn("fewer_than_requested",
-             f"Only {result.returned} recommendation(s) available; {result.requested} were requested.")
+        if result.policy == DIVERSE_POLICY:
+            warn("fewer_than_requested",
+                 f"Only {result.returned} recommendation(s) available: the catalog has only "
+                 f"{result.returned} distinct artist(s) for {result.requested} requested songs "
+                 f"in diverse mode.")
+        else:
+            warn("fewer_than_requested",
+                 f"Only {result.returned} recommendation(s) available; {result.requested} were requested.")
 
     # Low match scores.
     low = [s.rank for s in result.songs if s.match_level == LOW_MATCH]

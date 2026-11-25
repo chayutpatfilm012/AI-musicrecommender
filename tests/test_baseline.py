@@ -98,8 +98,12 @@ def test_default_profile_top5(songs):
 
 
 def test_default_profile_via_main_cli(monkeypatch, capsys):
-    """main() with no flags uses its built-in default profile."""
-    monkeypatch.setattr(sys, "argv", ["src.main"])
+    """main() uses its built-in default profile; --mode standard is the VibeFinder 1.0 ranking.
+
+    VibeFinder 2.0 defaults to diverse mode, so the original-ranking snapshot
+    now selects standard mode explicitly. All assertions below are unchanged.
+    """
+    monkeypatch.setattr(sys, "argv", ["src.main", "--mode", "standard"])
     main_module.main()
     out = capsys.readouterr().out
     assert "Loaded 20 songs." in out
